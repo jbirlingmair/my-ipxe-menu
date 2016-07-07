@@ -1,0 +1,133 @@
+#!ipxe
+
+# lines starting with # are comments
+
+# setup some basic variables
+
+# menu lasts for 15 seconds before making default choice automatically
+set menu-timeout 15000
+
+# set wds to the IP of the Windows Deploymnet Services server (can be handled by DHCP if you don't want to hard code it)
+set wds <x.x.x.x>
+
+# set tftp to the IP or hostname of the Trivial File Transfer Protocol server (can be handled by DHCP if you don't want to hard code it)
+set tftp <y.y.y.y>
+
+# this is used to create a static route to the iSCSI target when on a Local Area Network because WindowsPE always tries to go through the default gateway to find it
+set iscsi-target <z.z.z.z>
+
+# set the basic iscsi adresses
+set base-iqn iqn.<address>
+set base-iscsi iscsi:<hostnameOfiSCSITarget>::::${base-iqn}
+
+# this forces iPXE to use the iSCSI target IP address as the default gateway ensuring the arrival of WindowsPE originating packets
+set netX/gateway ${iscsi-target}
+
+# in my example, I used a Windows DHCP server, which at the time did not have options for next-server, using the following line alleviates that issue
+set netX/next-server ${wds}
+
+# ensure we have menu-default set to something
+isset ${menu-default} || set menu-default exit
+
+# to use concole command and PNG support make sure to compile iPXE with the required options (CONSOLE_CMD, graphicalFRAMEBUFFER, and IMG_PNG)
+console --picture <URIofBackgroundPNG> || goto start
+
+################################ Main Menu ############################
+
+:start
+menu iPXE boot menu
+item --gap --
+item --gap --                 ------ Boot Options ------
+item --key c cd               Boot from CD
+item --key w wds              Boot from WDS
+item --key i iscsiboot        Boot from iSCSI disk
+item --gap --                 ---- Advanced Options ----
+item config                   Configure settings
+item --key c clonezilla       Start Clonezilla
+item --key m iscsi            Mount iSCSI disk
+item --key s shell            Drop to shell
+item gpxe                     Use gPXE
+item reboot                   Reboot
+item --gap --
+item --key x exit             Exit
+choose --timeout ${menu-timeout} --default ${menu-default} selected || goto cancel
+set menu-timeout 0
+goto ${selected}
+
+:cancel
+echo You cancelled the menu, dropping to a shell...
+goto shell
+
+:shell
+echo Type exit to get back to the menu.
+shell
+set menu-timeout 0
+set submenu-timeout 0
+goto start
+
+:failed
+echo action failed, dropping to shell
+clear bootnow
+clear drivename
+goto shell
+
+:reboot
+reboot
+
+:exit
+exit
+
+:config
+config
+goto start
+
+############# Main Menu Items ################
+
+:cd
+echo Make sure the CD is in the tray.
+echo CD must be the next in the boot order.
+echo Dropping to CD control...
+sleep 3
+exit
+
+:wds
+echo Chainloading WDS...
+chain tftp://${wds}/boot/x64/wdsnbp.com || goto failed
+goto start
+
+:iscsiboot
+set bootnow 1
+isset ${drivename} || goto iscsi
+clear bootnow
+clear drivename
+echo Booting from hooked iSCSI at ${root-path}
+sanboot || goto failed
+goto start
+
+iscsi
+echo -n Enter iSCSI drive name: 
+read drivename
+echo iSCSI address: ${base-iscsi}${drivename}
+prompt --key y Is the above iSCSI address correct? y/n || goto start
+set root-path ${base-iscsi}${drivename}
+sanhook ${root-path} || goto failed
+echo Hooked iSCSI disk.
+sleep 2
+isset ${bootnow} || goto start
+goto iscsiboot
+
+:clonezilla
+echo Starting Clonezilla with US keyboard and English locale.
+# you can also use FTP or HTTP for the kernel and initrd commands (also for the fetch parameter for vmlinuz)
+kernel tftp://${tftp}/Clonezilla/vmlinuz
+initrd tftp://${tftp}/Clonezilla/initrd.img
+imgargs vmlinuz boot=live live-config noswap edd=on nomodeset ocs_live_run"ocs-live-general" locales=en_US.UTF-8 vga=788 keyboard-layouts=en nosplash fetch tftp://${tftp}/Clonezilla/filesystem.squashfs
+boot || goto failed
+goto start
+
+# legacy compatibility to launch gPXE if needed
+:gpxe
+echo Chaining gpXE...
+chain tftp://${tftp}/gPXE/undionly/kpxe
+goto start
+
